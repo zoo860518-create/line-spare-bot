@@ -232,7 +232,7 @@ def get_next_long_holiday_info(today_date):
 
         for i in range(max_days):
             d = today_date + timedelta(days=i)
-            if taiwan_holidays.is_holiday(d):
+            if taiwan_holidays.isholiday(d):
                 current_block.append(d)
             else:
                 if len(current_block) >= 3:

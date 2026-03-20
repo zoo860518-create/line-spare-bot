@@ -4,38 +4,40 @@ import hmac
 import hashlib
 import base64
 import requests
-from flask import Flask, request, abort
+import re
+from datetime import datetime, timedelta, date
+from flask import Flask, request, abort, jsonify
 
 app = Flask(__name__)
 
 CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
-INVENTORY_FILE = "inventory.json"
+# 連假提醒要用到，先留著
+TARGET_LINE_USER_ID = os.getenv("TARGET_LINE_USER_ID", "")
+CRON_SECRET = os.getenv("CRON_SECRET", "")
+
+SAFETY_FILE = "safety_stock.json"
+LATEST_STOCK_FILE = "latest_stock.json"
+HOLIDAYS_FILE = "holidays_2026.json"
 
 
-def load_inventory():
-    with open(INVENTORY_FILE, "r", encoding="utf-8") as f:
+def load_json_file(path, default=None):
+    if default is None:
+        default = {}
+    if not os.path.exists(path):
+        return default
+    with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def check_low_stock(data):
-    results = []
+def save_json_file(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-    for project, items in data.items():
-        low_items = []
-        for item_name, item_data in items.items():
-            stock = item_data.get("stock", 0)
-            safety = item_data.get("safety", 0)
-            if stock < safety:
-                low_items.append(f"- {item_name}: {stock} / {safety}")
 
-        if low_items:
-            results.append(f"{project}\n" + "\n".join(low_items))
-
-    if results:
-        return "⚠️ Low stock alert\n\n" + "\n\n".join(results)
-    return "✅ 目前沒有低於安全庫存的品項"
+def normalize_text(text):
+    return re.sub(r"\s+", " ", text.strip()).lower()
 
 
 def verify_signature(body, signature):
@@ -61,9 +63,173 @@ def reply_message(reply_token, text):
     requests.post(url, headers=headers, json=payload, timeout=10)
 
 
+def push_message(to_user_id, text):
+    url = "https://api.line.me/v2/bot/message/push"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"
+    }
+    payload = {
+        "to": to_user_id,
+        "messages": [{"type": "text", "text": text}]
+    }
+    requests.post(url, headers=headers, json=payload, timeout=10)
+
+
+def extract_section(report_text, section_name):
+    """
+    抓出 ZN / CFXD 區塊文字
+    """
+    pattern = rf"(?is)\b{re.escape(section_name)}\b(.*?)(?=\n[A-Z]{{2,}}\b|\Z)"
+    match = re.search(pattern, report_text)
+    return match.group(1) if match else ""
+
+
+def find_item_qty_in_text(text, item_name):
+    """
+    在文字中找某品項數量
+    支援：
+    - Upper tether line x 5
+    - x5
+    - *24
+    """
+    lines = text.splitlines()
+    target = normalize_text(item_name)
+
+    for line in lines:
+        line_norm = normalize_text(line)
+        if target in line_norm:
+            qty_match = re.search(r"(?:x|\*)\s*(\d+)", line, re.IGNORECASE)
+            if qty_match:
+                return int(qty_match.group(1))
+    return None
+
+
+def parse_report_to_stock(report_text, safety_stock):
+    """
+    從你每天貼的庫存報告中，依 safety_stock 裡的品項去抓現有數量
+    """
+    parsed = {
+        "ZN": {},
+        "CFXD": {},
+        "COMMON": {}
+    }
+
+    zn_text = extract_section(report_text, "ZN")
+    cfxd_text = extract_section(report_text, "CFXD")
+
+    # COMMON 用整份找，避免你的 common 品項在 ZN/CFXD 之外的位置不固定
+    whole_text = report_text
+
+    for item in safety_stock.get("ZN", {}):
+        qty = find_item_qty_in_text(zn_text, item)
+        if qty is not None:
+            parsed["ZN"][item] = qty
+
+    for item in safety_stock.get("CFXD", {}):
+        qty = find_item_qty_in_text(cfxd_text, item)
+        if qty is not None:
+            parsed["CFXD"][item] = qty
+
+    for item in safety_stock.get("COMMON", {}):
+        qty = find_item_qty_in_text(whole_text, item)
+        if qty is not None:
+            parsed["COMMON"][item] = qty
+
+    return parsed
+
+
+def format_low_stock(parsed_stock, safety_stock):
+    results = []
+
+    for project in ["ZN", "CFXD", "COMMON"]:
+        low_items = []
+        for item_name, safety_qty in safety_stock.get(project, {}).items():
+            current_qty = parsed_stock.get(project, {}).get(item_name)
+            if current_qty is None:
+                continue
+            if current_qty < safety_qty:
+                low_items.append(f"- {item_name}: {current_qty} / {safety_qty}")
+
+        if low_items:
+            results.append(f"{project}\n" + "\n".join(low_items))
+
+    if results:
+        return "⚠️ Low stock alert\n\n" + "\n\n".join(results)
+
+    return "✅ 目前沒有低於安全庫存的品項"
+
+
+def format_full_stock_summary(parsed_stock):
+    results = []
+
+    for project in ["ZN", "CFXD", "COMMON"]:
+        items = parsed_stock.get(project, {})
+        if not items:
+            continue
+
+        lines = [f"- {item}: {qty}" for item, qty in items.items()]
+        results.append(f"{project}\n" + "\n".join(lines))
+
+    if results:
+        return "📦 目前庫存整理\n\n" + "\n\n".join(results)
+
+    return "目前沒有可用的庫存資料"
+
+
+def load_holidays():
+    return load_json_file(HOLIDAYS_FILE, default=[])
+
+
+def is_two_days_before_holiday(today_date):
+    holidays = load_holidays()
+
+    for holiday in holidays:
+        start_date = datetime.strptime(holiday["start"], "%Y-%m-%d").date()
+        end_date = datetime.strptime(holiday["end"], "%Y-%m-%d").date()
+        duration = (end_date - start_date).days + 1
+
+        # 只提醒 3 天以上連假
+        if duration >= 3 and today_date == start_date - timedelta(days=2):
+            return holiday
+
+    return None
+
+
 @app.route("/", methods=["GET"])
 def home():
     return "LINE spare bot is running."
+
+
+@app.route("/cron/holiday-reminder", methods=["GET"])
+def holiday_reminder():
+    """
+    給外部排程打的 endpoint
+    例如 cron-job.org 每天打一次：
+    https://你的網址/cron/holiday-reminder?key=你的secret
+    """
+    key = request.args.get("key", "")
+    if not CRON_SECRET or key != CRON_SECRET:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    if not TARGET_LINE_USER_ID:
+        return jsonify({"ok": False, "error": "TARGET_LINE_USER_ID not set"}), 400
+
+    holiday = is_two_days_before_holiday(date.today())
+    if not holiday:
+        return jsonify({"ok": True, "message": "not reminder day"}), 200
+
+    latest_stock = load_json_file(LATEST_STOCK_FILE, default={})
+    if not latest_stock:
+        return jsonify({"ok": False, "error": "no latest stock data"}), 400
+
+    message = (
+        f"📦 {holiday['name']} 前兩天庫存提醒\n\n"
+        + format_full_stock_summary(latest_stock)
+    )
+    push_message(TARGET_LINE_USER_ID, message)
+
+    return jsonify({"ok": True, "message": "holiday reminder sent"}), 200
 
 
 @app.route("/callback", methods=["POST"])
@@ -75,6 +241,7 @@ def callback():
         abort(400, "Invalid signature")
 
     data = request.get_json()
+    safety_stock = load_json_file(SAFETY_FILE, default={})
 
     for event in data.get("events", []):
         if event.get("type") != "message":
@@ -85,12 +252,53 @@ def callback():
         user_text = event["message"]["text"].strip()
         reply_token = event["replyToken"]
 
+        # 指令 1：檢查最新庫存
         if user_text == "檢查":
-            inventory = load_inventory()
-            result = check_low_stock(inventory)
+            latest_stock = load_json_file(LATEST_STOCK_FILE, default={})
+            if not latest_stock:
+                reply_message(reply_token, "目前還沒有最新庫存資料，請先把每日庫存貼給我。")
+                continue
+
+            result = format_low_stock(latest_stock, safety_stock)
             reply_message(reply_token, result)
-        else:
-            reply_message(reply_token, "請輸入：檢查")
+            continue
+
+        # 指令 2：查看目前整理過的庫存
+        if user_text == "庫存":
+            latest_stock = load_json_file(LATEST_STOCK_FILE, default={})
+            if not latest_stock:
+                reply_message(reply_token, "目前還沒有最新庫存資料。")
+                continue
+
+            result = format_full_stock_summary(latest_stock)
+            reply_message(reply_token, result)
+            continue
+
+        # 指令 3：手動測試連假提醒格式
+        if user_text == "連假檢查":
+            latest_stock = load_json_file(LATEST_STOCK_FILE, default={})
+            if not latest_stock:
+                reply_message(reply_token, "目前還沒有最新庫存資料。")
+                continue
+
+            result = "📦 連假前庫存確認\n\n" + format_full_stock_summary(latest_stock)
+            reply_message(reply_token, result)
+            continue
+
+        # 其餘：當成每日庫存報告來解析
+        parsed_stock = parse_report_to_stock(user_text, safety_stock)
+
+        has_any_data = any(parsed_stock.get(section) for section in ["ZN", "CFXD", "COMMON"])
+        if not has_any_data:
+            reply_message(
+                reply_token,
+                "無法辨識庫存資料。\n請直接貼每日庫存內容，或輸入：檢查 / 庫存 / 連假檢查"
+            )
+            continue
+
+        save_json_file(LATEST_STOCK_FILE, parsed_stock)
+        result = format_low_stock(parsed_stock, safety_stock)
+        reply_message(reply_token, result)
 
     return "OK"
 

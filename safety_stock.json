@@ -1,0 +1,23 @@
+{
+  "ZN": {
+    "Upper tether line": 10,
+    "Lower tether line": 10,
+    "SRL type1": 6,
+    "SRL type2": 6,
+    "shackle": 20
+  },
+  "CFXD": {
+    "Upper tether line": 15,
+    "Lower tether line": 15,
+    "SRL type1": 6,
+    "SRL type2": 6,
+    "shackle": 25
+  },
+  "COMMON": {
+    "Extension cable and D-shackle(quick link)": 10,
+    "Rung Protector": 15,
+    "Fire extinguisher": 5,
+    "first aid kit": 7,
+    "Rubber pad": 30
+  }
+}

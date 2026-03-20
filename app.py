@@ -230,7 +230,9 @@ def get_next_long_holiday_info(today_date):
     print("today_date =", today_date)
 
     try:
-        tw_holidays = taiwan_holidays.TaiwanHolidays()
+        from taiwan_holidays.taiwan_calendar import TaiwanCalendar
+
+        calendar = TaiwanCalendar()
 
         max_days = 370
         holiday_blocks = []
@@ -239,14 +241,13 @@ def get_next_long_holiday_info(today_date):
         for i in range(max_days):
             d = today_date + timedelta(days=i)
 
-            if d in tw_holidays:  # ✅ 正確判斷方式
+            if calendar.is_holiday(d):
                 current_block.append(d)
             else:
                 if len(current_block) >= 3:
                     holiday_blocks.append(current_block)
                 current_block = []
 
-        # 最後一段也要檢查
         if len(current_block) >= 3:
             holiday_blocks.append(current_block)
 
@@ -264,14 +265,12 @@ def get_next_long_holiday_info(today_date):
                 "end": end_date.isoformat(),
                 "days_remaining": days_remaining
             }
-
             print("next_holiday_result =", result)
             return result
 
     except Exception as e:
         print("taiwan-holidays failed, fallback to local JSON:", str(e))
 
-    # 🔻 fallback（你原本的 JSON）
     holidays = load_holidays()
     print("fallback holidays =", holidays)
 

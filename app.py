@@ -1,3 +1,4 @@
+import taiwan_holidays
 import os
 import json
 import hmac
@@ -140,6 +141,19 @@ def parse_report_to_stock(report_text, safety_stock):
 def format_low_stock(parsed_stock, safety_stock):
     results = []
 
+    next_holiday = get_next_long_holiday_info(date.today())
+    header_lines = ["⚠️ Low stock alert"]
+
+    if next_holiday:
+        header_lines.append(
+            f"Next long holiday in {next_holiday['days_remaining']} day(s)"
+        )
+        header_lines.append(
+            f"Holiday period: {next_holiday['start']} to {next_holiday['end']}"
+        )
+
+    header = "\n".join(header_lines)
+
     for project in ["ZN", "CFXD", "COMMON"]:
         low_items = []
         for item_name, safety_qty in safety_stock.get(project, {}).items():
@@ -153,7 +167,14 @@ def format_low_stock(parsed_stock, safety_stock):
             results.append(f"{project}\n" + "\n".join(low_items))
 
     if results:
-        return "⚠️ Low stock alert\n\n" + "\n\n".join(results)
+        return header + "\n\n" + "\n\n".join(results)
+
+    if next_holiday:
+        return (
+            f"✅ 目前沒有低於安全庫存的品項\n"
+            f"Next long holiday in {next_holiday['days_remaining']} day(s)\n"
+            f"Holiday period: {next_holiday['start']} to {next_holiday['end']}"
+        )
 
     return "✅ 目前沒有低於安全庫存的品項"
 
@@ -201,19 +222,68 @@ def load_holidays():
     return load_json_file(HOLIDAYS_FILE, default=[])
 
 
-def is_two_days_before_holiday(today_date):
+def get_next_long_holiday_info(today_date):
+    """
+    優先用 taiwan-holidays 判斷下一個 3 天以上連假
+    如果失敗，再 fallback 到本地 holidays_2026.json
+    """
+    # 先用 taiwan-holidays
+    try:
+        max_days = 370
+        holiday_blocks = []
+        current_block = []
+
+        for i in range(max_days):
+            d = today_date + timedelta(days=i)
+            # 套件判斷是否為台灣假日/非工作日
+            if taiwan_holidays.is_holiday(d):
+                current_block.append(d)
+            else:
+                if len(current_block) >= 3:
+                    holiday_blocks.append(current_block)
+                current_block = []
+
+        if len(current_block) >= 3:
+            holiday_blocks.append(current_block)
+
+        if holiday_blocks:
+            next_block = holiday_blocks[0]
+            start_date = next_block[0]
+            end_date = next_block[-1]
+            days_remaining = (start_date - today_date).days
+
+            return {
+                "name": "Next DGPA long holiday",
+                "start": start_date.isoformat(),
+                "end": end_date.isoformat(),
+                "days_remaining": days_remaining
+            }
+
+    except Exception as e:
+        print("taiwan-holidays failed, fallback to local JSON:", str(e))
+
+    # fallback: 本地 JSON
     holidays = load_holidays()
 
+    future_holidays = []
     for holiday in holidays:
         start_date = datetime.strptime(holiday["start"], "%Y-%m-%d").date()
         end_date = datetime.strptime(holiday["end"], "%Y-%m-%d").date()
         duration = (end_date - start_date).days + 1
 
-        if duration >= 3 and today_date == start_date - timedelta(days=2):
-            return holiday
+        if duration >= 3 and start_date >= today_date:
+            future_holidays.append({
+                "name": holiday["name"],
+                "start": holiday["start"],
+                "end": holiday["end"],
+                "days_remaining": (start_date - today_date).days
+            })
+
+    if future_holidays:
+        future_holidays.sort(key=lambda x: x["start"])
+        return future_holidays[0]
 
     return None
-
 
 @app.route("/", methods=["GET"])
 def home():

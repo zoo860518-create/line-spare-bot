@@ -13,7 +13,7 @@ app = Flask(__name__)
 CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
-# 連假提醒要用到，先留著
+# 連假提醒用
 TARGET_LINE_USER_ID = os.getenv("TARGET_LINE_USER_ID", "")
 CRON_SECRET = os.getenv("CRON_SECRET", "")
 
@@ -78,20 +78,29 @@ def push_message(to_user_id, text):
 
 def extract_section(report_text, section_name):
     """
-    抓出 ZN / CFXD 區塊文字
+    只抓 ZN / CFXD 區塊
+    不再把 SRL type1 這種大寫品項誤判成下一個段落
     """
-    pattern = rf"(?is)\b{re.escape(section_name)}\b(.*?)(?=\n[A-Z]{{2,}}\b|\Z)"
-    match = re.search(pattern, report_text)
+    headings = ["ZN", "CFXD"]
+    other_headings = [h for h in headings if h != section_name]
+
+    if other_headings:
+        next_heading_pattern = "|".join(re.escape(h) for h in other_headings)
+        pattern = rf"(?is)^\s*{re.escape(section_name)}\s*$([\s\S]*?)(?=^\s*(?:{next_heading_pattern})\s*$|\Z)"
+    else:
+        pattern = rf"(?is)^\s*{re.escape(section_name)}\s*$([\s\S]*?)\Z"
+
+    match = re.search(pattern, report_text, re.MULTILINE)
     return match.group(1) if match else ""
 
 
 def find_item_qty_in_text(text, item_name):
     """
-    在文字中找某品項數量
+    在指定文字區塊中找品項數量
     支援：
     - Upper tether line x 5
-    - x5
-    - *24
+    - Upper tether line x5
+    - Spray Mask *24
     """
     lines = text.splitlines()
     target = normalize_text(item_name)
@@ -106,9 +115,6 @@ def find_item_qty_in_text(text, item_name):
 
 
 def parse_report_to_stock(report_text, safety_stock):
-    """
-    從你每天貼的庫存報告中，依 safety_stock 裡的品項去抓現有數量
-    """
     parsed = {
         "ZN": {},
         "CFXD": {},
@@ -117,8 +123,6 @@ def parse_report_to_stock(report_text, safety_stock):
 
     zn_text = extract_section(report_text, "ZN")
     cfxd_text = extract_section(report_text, "CFXD")
-
-    # COMMON 用整份找，避免你的 common 品項在 ZN/CFXD 之外的位置不固定
     whole_text = report_text
 
     for item in safety_stock.get("ZN", {}):
@@ -252,7 +256,7 @@ def callback():
         user_text = event["message"]["text"].strip()
         reply_token = event["replyToken"]
 
-        # 指令 1：檢查最新庫存
+        # 指令：檢查最新低庫存
         if user_text == "檢查":
             latest_stock = load_json_file(LATEST_STOCK_FILE, default={})
             if not latest_stock:
@@ -263,7 +267,7 @@ def callback():
             reply_message(reply_token, result)
             continue
 
-        # 指令 2：查看目前整理過的庫存
+        # 指令：查看目前整理過的庫存
         if user_text == "庫存":
             latest_stock = load_json_file(LATEST_STOCK_FILE, default={})
             if not latest_stock:
@@ -274,7 +278,7 @@ def callback():
             reply_message(reply_token, result)
             continue
 
-        # 指令 3：手動測試連假提醒格式
+        # 指令：手動測試連假提醒格式
         if user_text == "連假檢查":
             latest_stock = load_json_file(LATEST_STOCK_FILE, default={})
             if not latest_stock:
@@ -285,7 +289,7 @@ def callback():
             reply_message(reply_token, result)
             continue
 
-        # 其餘：當成每日庫存報告來解析
+        # 其餘內容：當成每日庫存報告
         parsed_stock = parse_report_to_stock(user_text, safety_stock)
 
         has_any_data = any(parsed_stock.get(section) for section in ["ZN", "CFXD", "COMMON"])

@@ -223,11 +223,8 @@ def load_holidays():
 
 
 def get_next_long_holiday_info(today_date):
-    """
-    優先用 taiwan-holidays 判斷下一個 3 天以上連假
-    如果失敗，再 fallback 到本地 holidays_2026.json
-    """
-    # 先用 taiwan-holidays
+    print("today_date =", today_date)
+
     try:
         max_days = 370
         holiday_blocks = []
@@ -235,7 +232,6 @@ def get_next_long_holiday_info(today_date):
 
         for i in range(max_days):
             d = today_date + timedelta(days=i)
-            # 套件判斷是否為台灣假日/非工作日
             if taiwan_holidays.is_holiday(d):
                 current_block.append(d)
             else:
@@ -246,24 +242,28 @@ def get_next_long_holiday_info(today_date):
         if len(current_block) >= 3:
             holiday_blocks.append(current_block)
 
+        print("holiday_blocks =", holiday_blocks)
+
         if holiday_blocks:
             next_block = holiday_blocks[0]
             start_date = next_block[0]
             end_date = next_block[-1]
             days_remaining = (start_date - today_date).days
 
-            return {
+            result = {
                 "name": "Next DGPA long holiday",
                 "start": start_date.isoformat(),
                 "end": end_date.isoformat(),
                 "days_remaining": days_remaining
             }
+            print("next_holiday_result =", result)
+            return result
 
     except Exception as e:
         print("taiwan-holidays failed, fallback to local JSON:", str(e))
 
-    # fallback: 本地 JSON
     holidays = load_holidays()
+    print("fallback holidays =", holidays)
 
     future_holidays = []
     for holiday in holidays:
@@ -279,10 +279,14 @@ def get_next_long_holiday_info(today_date):
                 "days_remaining": (start_date - today_date).days
             })
 
+    print("future_holidays =", future_holidays)
+
     if future_holidays:
         future_holidays.sort(key=lambda x: x["start"])
+        print("fallback next holiday =", future_holidays[0])
         return future_holidays[0]
 
+    print("no holiday found")
     return None
 
 @app.route("/", methods=["GET"])

@@ -1,0 +1,22 @@
+{
+  "ZN": {
+    "Upper tether line": {
+      "stock": 5,
+      "safety": 20
+    },
+    "shackle": {
+      "stock": 15,
+      "safety": 20
+    }
+  },
+  "CFXD": {
+    "Upper tether line": {
+      "stock": 14,
+      "safety": 20
+    },
+    "shackle": {
+      "stock": 30,
+      "safety": 20
+    }
+  }
+}

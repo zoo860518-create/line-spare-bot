@@ -158,6 +158,28 @@ def format_low_stock(parsed_stock, safety_stock):
     return "✅ 目前沒有低於安全庫存的品項"
 
 
+def format_need_supplements(parsed_stock, safety_stock):
+    results = []
+
+    for project in ["ZN", "CFXD", "COMMON"]:
+        need_items = []
+        for item_name, safety_qty in safety_stock.get(project, {}).items():
+            current_qty = parsed_stock.get(project, {}).get(item_name)
+            if current_qty is None:
+                continue
+            if current_qty < safety_qty:
+                need_qty = safety_qty - current_qty
+                need_items.append(f"- {item_name} x {need_qty}")
+
+        if need_items:
+            results.append(f"{project}\n" + "\n".join(need_items))
+
+    if results:
+        return "Need supplements\n\n" + "\n\n".join(results)
+
+    return None
+
+
 def format_full_stock_summary(parsed_stock):
     results = []
 
@@ -246,6 +268,7 @@ def callback():
 
             user_text = event["message"]["text"].strip()
             reply_token = event["replyToken"]
+            user_id = event.get("source", {}).get("userId", "")
 
             print("User text:", user_text)
 
@@ -258,6 +281,11 @@ def callback():
                 result = format_low_stock(latest_stock, safety_stock)
                 print("Check result:", result)
                 reply_message(reply_token, result)
+
+                need_supplements_result = format_need_supplements(latest_stock, safety_stock)
+                if need_supplements_result and user_id:
+                    print("Need supplements result:", need_supplements_result)
+                    push_message(user_id, need_supplements_result)
                 continue
 
             if user_text == "庫存":
@@ -294,9 +322,15 @@ def callback():
                 continue
 
             save_json_file(LATEST_STOCK_FILE, parsed_stock)
-            result = format_low_stock(parsed_stock, safety_stock)
-            print("Low stock result:", result)
-            reply_message(reply_token, result)
+
+            low_stock_result = format_low_stock(parsed_stock, safety_stock)
+            print("Low stock result:", low_stock_result)
+            reply_message(reply_token, low_stock_result)
+
+            need_supplements_result = format_need_supplements(parsed_stock, safety_stock)
+            if need_supplements_result and user_id:
+                print("Need supplements result:", need_supplements_result)
+                push_message(user_id, need_supplements_result)
 
         return "OK"
 

@@ -7,8 +7,8 @@
     "shackle": 20
   },
   "CFXD": {
-    "Upper tether line": 15,
-    "Lower tether line": 15,
+    "Upper tether line": 10,
+    "Lower tether line": 10,
     "SRL type1": 6,
     "SRL type2": 6,
     "shackle": 25
